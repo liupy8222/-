@@ -14,6 +14,17 @@ editor_options:
   chunk_output_type: inline
 ---
 
+### 需要更改的变量
+
+```{r}
+# 保存文件夹名  output_dir <- "ceshi" # 新目录
+# 录入数据名   file_name <- "2024297.xlsx" 
+#弦图中处理的单位 rownames(mat) <- paste0(rownames(mat)," 万株/hm²")
+#多元回归自变量   y_raw <- clean_data[, "单株粒重"] # 最后一列
+#除自变量外的变量 x_raw <- clean_data[, setdiff(names(clean_data), "单株粒重")] # 前面的列
+
+```
+
 ### 清空环境
 
 ```{r}
@@ -523,6 +534,232 @@ for (trait in all_traits) {
 colnames(table_data_final) <- final_output_cols
 
 print(table_data_final)
+```
+
+### 小提琴图
+
+```{r}
+#raw_data
+
+for(trait in traits) {
+  df_sub <- raw_data[, c("Group", trait)]
+  colnames(df_sub) <- c("Group", "Value")
+  df_sub <- na.omit(df_sub)
+  
+  df_sub1 <- raw_data4[, c("Group", trait)]
+  colnames(df_sub1) <- c("Group", "Value")
+  df_sub1 <- na.omit(df_sub1)
+  
+  if (!trait %in% colnames(raw_danwei))
+  {traitdanwei <- trait
+  } else {unit_val <- raw_danwei[[trait]]
+  if (!is.na(unit_val) && nzchar(unit_val)) {
+    traitdanwei <- paste0(trait, "(", unit_val, ")")} 
+  else {traitdanwei <- trait}}
+  
+  if (!first_value %in% colnames(raw_danwei)) 
+  {first_valuedanwei <- first_value
+  } else {unit_val <- raw_danwei[[first_value]]
+  if (!is.na(unit_val) && nzchar(unit_val)) {
+    first_valuedanwei <- paste0(first_value, "(", unit_val, ")")} 
+  else {first_valuedanwei <- first_value}}
+  
+  if (!trait %in% colnames(raw_suoxie)) 
+  {traitsuoxie <- trait
+  } else {unit_val <- raw_suoxie[[trait]]
+  if (!is.na(unit_val) && nzchar(unit_val)) {
+    traitsuoxie <- unit_val
+  } else {traitsuoxie <- trait}}
+  
+  lm_model <- lm(Value ~ Group, data = df_sub)
+  spss_table <- NULL
+  letters_df <- NULL
+  
+  model <- aov(Value ~ Group, data = df_sub)
+  anova_sum <- summary(model)[[1]]
+  spss_table <- data.frame(性状=trait, 来源=c("组间","组内","总数"), 
+                           SS=c(anova_sum$`Sum Sq`[1:2], sum(anova_sum$`Sum Sq`)),
+                           df=c(anova_sum$`Df`[1:2], sum(anova_sum$`Df`)),
+                           MS=c(anova_sum$`Mean Sq`[1:2], NA), F=c(anova_sum$`F value`[1], NA, NA),
+                           Sig=c(anova_sum$`Pr(>F)`[1], NA, NA))
+  if(anova_sum$`Pr(>F)`[1] < 0.05) {
+    duncan <- duncan.test(model, "Group", console=FALSE)
+    letters_df <- data.frame(Group = rownames(duncan$groups), groups = duncan$groups$groups)
+  } else { letters_df <- data.frame(Group = unique(df_sub$Group), groups = "a") }
+  res_anova_spss_list[[trait]] <- spss_table
+  
+  # --- C. 绘图准备 (略) ---
+  stats <- df_sub %>% group_by(Group) %>% summarise(Mean = mean(Value), 
+                                                    SE = sd(Value)/ sqrt(length(Value)), .groups='drop')
+  plot_data <- merge(stats, letters_df, by="Group")
+  plot_data$Trait <- trait
+  # **关键修改点：在summary中同时保存 Mean_Formatted 和 groups**
+  plot_data$Mean_Formatted <- sprintf("%.2f", plot_data$Mean)
+  res_summary_list[[trait]] <- plot_data
+  
+  final_summary <- do.call(rbind, res_summary_list)
+  
+  table_data_mean <- final_summary %>%
+    dplyr::select(Group, Trait, Mean_Formatted) %>%
+    pivot_wider(names_from = Trait, values_from = Mean_Formatted, names_prefix = "Mean_")
+  
+  table_data_groups <- final_summary %>%
+    dplyr::select(Group, Trait, groups) %>%
+    pivot_wider(names_from = Trait, values_from = groups, names_prefix = "Letter_")
+  
+  # 合并数据（按 Group 合并）
+  table_data_wide <- merge(table_data_mean, table_data_groups, by = "Group")
+  
+  # 创建最终输出表格，将 Mean 和 Letter 交替排列
+  output_cols <- c("Group")
+  all_traits <- unique(final_summary$Trait)
+  for (trait in all_traits) {
+    output_cols <- c(output_cols, paste0("Mean_", trait), paste0("Letter_", trait))}
+  
+  table_data <- table_data_wide[, output_cols]
+  
+  # 空. 绘制小提琴图--------
+  # (1) 在后台默默生成一个小提琴图层（不需要打印出来）
+  dummy_p <- ggplot(df_sub1, aes(x = Group, y = Value)) + 
+    geom_violin(trim = FALSE)
+  
+  # (2) 提取该图形底层的绘图数据
+  shadow_data <- ggplot_build(dummy_p)$data[[1]]
+  
+  # (3) 提取每个分组（group 1, 2, 3...）画出来的阴影曲线的最高 Y 坐标
+  max_shadow <- shadow_data %>% 
+    dplyr::group_by(group) %>% 
+    dplyr::summarize(Shadow_Max = max(y), .groups = 'drop')
+  
+  # (4) 将您原本的 plot_data 的 Group 转成与底层数据对应的数字顺序，并合并
+  plot_data$group_num <- as.numeric(factor(plot_data$Group, levels = levels(df_sub1$Group)))
+  plot_data1 <- merge(plot_data, max_shadow, by.x = "group_num", by.y = "group")
+  
+  # 计算当前数据的整体极差 (最大值 - 最小值)，取极差的 5% 作为字母向上浮动的距离
+  y_range <- max(df_sub1$Value, na.rm = TRUE) - min(df_sub1$Value, na.rm = TRUE)
+  offset <- ifelse(y_range == 0, 1, y_range * 0.1) # 防止全是一个值导致极差为0
+  plot_data1$y_pos <- plot_data1$Shadow_Max + offset 
+  min_val <- min(df_sub1$Value, na.rm = TRUE)
+  # 2. 预设一组好看的填充颜色 (最多支持10个组，如果您的组更多，可以继续往里加颜色代码)
+  my_colors <- c("#BD7C78", "#B0D7E9", "#7767A1", "#F7C7C0", 
+                 "#8491B4", "#91D1C2", "#DC0000", "#7E6148")
+  
+  # 3. 开始使用 df_sub(原始) 和 plot_data(汇总) 联合绘图
+  p_violin <- ggplot() + 
+    
+    # 第1层：小提琴背景，必须使用原始数据 df_sub
+    geom_violin(data = df_sub1, aes(x = Group, y = Value, fill = Group, color = Group), 
+                trim = FALSE, linewidth = 0.01) +
+    
+    # 第2层：内部箱线图，也使用原始数据 df_sub
+    geom_boxplot(data = df_sub1, aes(x = Group, y = Value),
+                 width = 0.06, color = "black", fill = "black", outlier.shape = NA) +
+    
+    # 第3层：中位数白点，使用原始数据 df_sub
+    stat_summary(data = df_sub1, aes(x = Group, y = Value),
+                 fun = median, geom = "point", fill = "white", color = "white", shape = 21, size = 4) +
+    
+    # 第4层：显著性字母，必须使用包含 groups 列的汇总数据 plot_data
+    geom_text(data = plot_data1, 
+              aes(x = Group, y = y_pos, label = groups), 
+              family = "Times New Roman", size = 16, fontface = "bold", color = "black") +
+    scale_color_manual(values = my_colors)+
+    scale_fill_manual(values = my_colors) +
+    labs(x = first_valuedanwei, y = traitdanwei, title = NULL) + 
+    
+    theme_bw() + 
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(family = "Times New Roman", size = 30, color = "black", face = "bold"),
+      axis.text.y = element_text(family = "Times New Roman", size = 30, color = "black", face = "bold", hjust = 0.5),
+      axis.title.x = element_text(size = 30, color = "black", face = "bold", margin = margin(t = 10)),
+      axis.title.y = element_text(size = 30, color = "black", face = "bold", margin = margin(r = 10)),
+      legend.position = "none"
+    ) +
+    
+    # Y轴向上留出 15% 的空白给字母，防止字母被图片边缘切断
+    scale_y_continuous(limits = c(min_val, NA),expand = expansion(mult = c(0.01, 0.05)))
+  
+  print(p_violin)
+  plot_dir <- file.path(output_dir, "violin_plots")
+  if(!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
+ 
+  ggsave(file.path(plot_dir, paste0(traitsuoxie, ".pdf")), p_violin, 
+         width = 7, height = 6, device = cairo_pdf)
+ 
+  
+  
+  # 空. 绘制小提琴图--------
+  # (1) 在后台默默生成一个小提琴图层（不需要打印出来）
+  dummy_p <- ggplot(df_sub, aes(x = Group, y = Value)) + 
+    geom_violin(trim = FALSE)
+  
+  # (2) 提取该图形底层的绘图数据
+  shadow_data <- ggplot_build(dummy_p)$data[[1]]
+  
+  # (3) 提取每个分组（group 1, 2, 3...）画出来的阴影曲线的最高 Y 坐标
+  max_shadow <- shadow_data %>% 
+    dplyr::group_by(group) %>% 
+    dplyr::summarize(Shadow_Max = max(y), .groups = 'drop')
+  
+  # (4) 将您原本的 plot_data 的 Group 转成与底层数据对应的数字顺序，并合并
+  plot_data$group_num <- as.numeric(factor(plot_data$Group, levels = levels(df_sub$Group)))
+  plot_data1 <- merge(plot_data, max_shadow, by.x = "group_num", by.y = "group")
+  
+  # 计算当前数据的整体极差 (最大值 - 最小值)，取极差的 5% 作为字母向上浮动的距离
+  y_range <- max(df_sub$Value, na.rm = TRUE) - min(df_sub$Value, na.rm = TRUE)
+  offset <- ifelse(y_range == 0, 1, y_range * 0.1) # 防止全是一个值导致极差为0
+  plot_data1$y_pos <- plot_data1$Shadow_Max + offset 
+  min_val <- min(df_sub$Value, na.rm = TRUE)
+  # 2. 预设一组好看的填充颜色 (最多支持10个组，如果您的组更多，可以继续往里加颜色代码)
+  my_colors <- c("#BD7C78", "#B0D7E9", "#7767A1", "#F7C7C0", 
+                 "#8491B4", "#91D1C2", "#DC0000", "#7E6148")
+  
+  # 3. 开始使用 df_sub(原始) 和 plot_data(汇总) 联合绘图
+  p_violin <- ggplot() + 
+    
+    # 第1层：小提琴背景，必须使用原始数据 df_sub
+    geom_violin(data = df_sub, aes(x = Group, y = Value, fill = Group, color = Group), 
+                trim = FALSE, linewidth = 0.01) +
+    
+    # 第2层：内部箱线图，也使用原始数据 df_sub
+    geom_boxplot(data = df_sub, aes(x = Group, y = Value),
+                 width = 0.06, color = "black", fill = "black", outlier.shape = NA) +
+    
+    # 第3层：中位数白点，使用原始数据 df_sub
+    stat_summary(data = df_sub, aes(x = Group, y = Value),
+                 fun = median, geom = "point", fill = "white", color = "white", shape = 21, size = 4) +
+    
+    # 第4层：显著性字母，必须使用包含 groups 列的汇总数据 plot_data
+    geom_text(data = plot_data1, 
+              aes(x = Group, y = y_pos, label = groups), 
+              family = "Times New Roman", size = 16, fontface = "bold", color = "black") +
+    scale_color_manual(values = my_colors)+
+    scale_fill_manual(values = my_colors) +
+    labs(x = first_valuedanwei, y = traitdanwei, title = NULL) + 
+    
+    theme_bw() + 
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(family = "Times New Roman", size = 30, color = "black", face = "bold"),
+      axis.text.y = element_text(family = "Times New Roman", size = 30, color = "black", face = "bold", hjust = 0.5),
+      axis.title.x = element_text(size = 30, color = "black", face = "bold", margin = margin(t = 10)),
+      axis.title.y = element_text(size = 30, color = "black", face = "bold", margin = margin(r = 10)),
+      legend.position = "none"
+    ) +
+    
+    # Y轴向上留出 15% 的空白给字母，防止字母被图片边缘切断
+    scale_y_continuous(limits = c(min_val, NA),expand = expansion(mult = c(0.01, 0.05)))
+  
+  print(p_violin)
+  plot_dir1 <- file.path(output_dir, "violin_plots_pinjun")
+  if(!dir.exists(plot_dir1)) dir.create(plot_dir1, recursive = TRUE)
+  
+  ggsave(file.path(plot_dir1, paste0(traitsuoxie, ".pdf")), p_violin, 
+         width = 7, height = 6, device = cairo_pdf)
+} 
 ```
 
 ### 频次分布直方图——观测值
@@ -1407,13 +1644,171 @@ ggsave(file.path(cor_dir, "Correlation_Analysis_Final.pdf"),
        p_corr, width = 10, height = 9, device = cairo_pdf)
 ```
 
-### 主成分分析 (PCA)
+### 弦图+主成分分析 (PCA)
 
 ```{r}
 
 # raw_data5
 
 clean_data_for_pca <- raw_data5[, -1]  # 移除编号列
+first_for_pca <- raw_data5[1]
+{
+  pdf("BZH.pdf", width = 12, height = 12)
+  # 2. 数据预处理：提取、标准化、计算组均值
+  group_col <- first_for_pca  
+  colnames(group_col) <- "Group"
+  trait_data <- clean_data_for_pca # 其余列为性状
+  
+  # 进行 scale 标准化
+  scaled_data <- scale(trait_data)
+  
+  # 将分组信息拼接回去
+  df_processed <- data.frame(Group = group_col, scaled_data,check.names = FALSE)
+  
+  # 按组求均值 (使用 dplyr)
+  agg_data <- df_processed %>%
+    group_by(df_processed[1]) %>%
+    summarise(across(everything(), mean))
+  
+  # 转换为 circlize 需要的矩阵格式
+  # 矩阵的行名为分组(右侧)，列名为性状(左侧)
+  mat <- as.matrix(agg_data[, -1])
+  mat_h <- agg_data[1]
+  
+  rownames(mat) <- agg_data$Group
+  
+  # 定义组别和性状名称
+  rownames(mat) <- paste0(rownames(mat)," 万株/hm²")
+  groups <- rownames(mat)
+  
+  
+  colnames(mat) <- sapply(colnames(mat), function(trait) {
+    if (!trait %in% colnames(raw_suoxie)) {
+      return(trait)
+    } else {
+      unit_val <- raw_suoxie[[trait]]
+      if (!is.na(unit_val) && nzchar(unit_val)) {
+        return(unit_val)
+      } else {
+        return(trait)
+      }
+    }
+  }, USE.NAMES = FALSE)
+  traits <- colnames(mat)
+  
+  smart_palette <- function(colors, n) {
+    if (n <= length(colors)) {
+      colors[1:n]
+    } else {
+      colorRampPalette(colors)(n)
+    }
+  }
+  
+  # 设定颜色
+  group_colors <- c("#5BCBCB", "#FFB85D", "#E16D38", "#977DB9", "#FB7F7A", "#8C564B", "#E377C2", 
+                    "#17BECF", "#BCBD22", "#7CA741", "#FF7F0E", "#7F7F7F", "#3B75AF", "#E3B212", 
+                    "#C0504D", "#6D4B79", "#E16D38", "#6A7B8E", "#3A9C8C", "#277A55", "#5E98C5")
+  n_varsg <- nrow(mat)
+  group_colors <- smart_palette(group_colors, n_varsg)
+  # 为性状设定统一颜色或不同颜色 
+  trait_colors <- c("#17BECF", "#BCBD22", "#7CA741", "#FF7F0E", "#7F7F7F", "#3B75AF", "#E3B212", 
+                    "#C0504D", "#6D4B79", "#E16D38", "#6A7B8E", "#F2545B", "#277A55", "#5E98C5")
+  n_varst <- ncol(mat)
+  trait_colors <- smart_palette(trait_colors, n_varst)
+  # 合并所有扇区的颜色
+  grid_col <- c(group_colors, trait_colors)
+  
+  # 初始化画布
+  circos.clear()
+  
+  # 设置画布参数
+  # gap.after 用于在“组别”和“性状”之间留下较大的空隙，区分左右两侧
+  # 假设 groups 是放在一起的，traits 是放在一起的
+  circos.par(
+    start.degree = 90, # 旋转图形，使大缺口位于上下方
+    gap.after = c(rep(1, length(groups)-1), 5, rep(1, length(traits)-1), 5),
+    track.margin = c(0, 0.01)
+  )
+  
+  col_mat <- matrix(
+    ifelse(mat > 0, "#E16D3888", "#5BCBCB88"),
+    nrow = nrow(mat),
+    dimnames = dimnames(mat)
+  )
+  # 基础绘制：只画网格和连线，不画默认的标签和刻度（为了后面自定义更美观的标签）
+  cd <- chordDiagram(abs(mat),
+                     grid.col = grid_col,       # 扇区颜色
+                     transparency = 0.7,        # 连线透明度
+                     order = c(groups, traits), # 强制排序，组别在一半，性状在另一半
+                     annotationTrack = "grid",  # 只保留扇形色块(grid)，去掉默认的文本
+                     preAllocateTracks = list(track.height = max(strwidth(unlist(dimnames(mat)))))) # 预留外围写文字的空间
+  
+  track_index <- 1  # grid 对应的 track，按实际调整
+  
+  cd_sorted <- cd[order(cd$cn, cd$o2), ]
+  
+  cd_sorted <- cd_sorted %>%
+    group_by(cn) %>%
+    mutate(
+      y1 = cumsum(value2) - value2,
+      y2 = cumsum(value2)
+    ) %>%
+    ungroup()
+  
+  # 覆盖 row 扇区（groups）分段
+  for (i in seq_len(nrow(cd_sorted))) {
+    rn      <- cd_sorted$rn[i]
+    cn      <- cd_sorted$cn[i]
+    
+    sign_val <- mat[rn, cn]
+    seg_col  <- ifelse(sign_val > 0, "yellow", "grey")
+    
+    circos.rect(
+      xleft        = cd_sorted$y1[i],
+      xright       = cd_sorted$y2[i],
+      ybottom      = -0.2,
+      ytop         = -0.05,
+      sector.index = cn,
+      track.index  = track_index,
+      col          = seg_col,
+      border       = NA
+    )
+  }
+  
+  # 自定义添加外围标签和刻度线
+  circos.track(track.index = 1, panel.fun = function(x, y) {
+    sector.index = get.cell.meta.data("sector.index")
+    xlim = get.cell.meta.data("xlim")
+    
+    # 添加外围文本标签
+    circos.text(mean(xlim), 0.5, sector.index, 
+                facing = "inside",  # 文字方向
+                niceFacing = TRUE, 
+                adj = par("adj"),       # 文字对齐方式
+                cex = 1.5)             # 字体大小
+    
+    max_tick_pos = ceiling(max(xlim) / 2) * 2
+    ticks = seq(from = 0, to = max_tick_pos, by = 2)
+    ticks_labels = ifelse(ticks <= max(xlim), as.character(ticks), "")
+    # 添加刻度轴seq(0, max(xlim), by = 2)
+    circos.axis(h = "top", 
+                major.at = ticks,        
+                labels = ticks_labels,
+                labels.cex = 1,      # 刻度数字大小
+                major.tick.length = 1, # 刻度线长度
+                # sector.index = sector.index, 
+                track.index = 2)
+  }, bg.border = NA) # 去除轨迹边框
+  
+  par(xpd = NA)
+  # 添加水平图例，放置在图形底部外侧
+  legend(x = -1, y = 0.9, legend = c("正", "负"),
+         fill = c("yellow", "grey"), bty = "n", cex = 2)
+  # 绘制完成后清除参数设定
+  circos.clear()
+  dev.off()
+}
+
 pca_result <- prcomp(clean_data_for_pca, scale. = TRUE) 
 
 first_var_signs <- sign(pca_result$rotation[1, ])
@@ -1469,12 +1864,10 @@ print(pca_rounded)
 ### 主成分分析图
 
 ```{r}
-{edge_exe <- "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
-Sys.setenv(CHROMOTE_CHROME = edge_exe)
 
 PCA_dir <- file.path(output_dir, "PCA")
-if(!dir.exists(PCA_dir)) dir.create(PCA_dir)
-
+{edge_exe <- "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe"
+Sys.setenv(CHROMOTE_CHROME = edge_exe)
 smart_pca_visualize_save <- function(pca_res, var_pct) {
   scores <- as.data.frame(pca_res$x)
   n_samples <- nrow(scores)
@@ -1488,14 +1881,16 @@ smart_pca_visualize_save <- function(pca_res, var_pct) {
     c("#9370DB", "#4B0082", "#D8BFD8"),
     c("#4682B4", "#000080", "#E6E6FA")
   )
+  
   # 用于收集结果以便在 RStudio 显示
   plot_list <- list()
+  
   # --- 4. 逻辑分流与绘图 ---
+  
   #改图大小 ------------------
   if (n_pcs == 2) {
     cat("主成分为 2 列，生成 2D 图...\n")
-    p <- plot_pca_2d_core(pca_res, var_pct, dims = c(1, 2), colors = color_palettes[[1]])
-    print(p)
+    p <- plot_pca_2d_core(pca_res, var_pct, dims = c(1, 2))
     file_name <- file.path(PCA_dir, "PCA_2D_PC1-PC2.html")
     saveWidget(p, file_name, selfcontained = TRUE)
     pdf_file <- file.path(PCA_dir, "PCA_2D_PC1-PC2.pdf")
@@ -1510,9 +1905,11 @@ smart_pca_visualize_save <- function(pca_res, var_pct) {
     )
     system2("pdfcrop", args = c(shQuote(pdf_file), shQuote(pdf_file)))
     cat(sprintf("  -> 已保存: %s\n", file_name))
+    
     return(p)
   } 
   #tryCatch({webshot2::webshot(url = normalizePath(html_name), file = pdf_name, vwidth = 1200, vheight = 900, delay = 0.5)cat(sprintf("  -> 已保存 pdf : %s\n", pdf_name))}, error = function(e) {cat(sprintf("  -> [错误] 2D pdf 保存失败: %s\n", e$message))})
+  
   # === 情况 B: 3个及以上主成分 -> 画 3D 图 (多图策略) ===
   else {
     # 计算需要画几张图
@@ -1520,32 +1917,37 @@ smart_pca_visualize_save <- function(pca_res, var_pct) {
     num_plots <- ceiling(n_pcs / 3)
     
     for (i in 1:num_plots) {
+      
+      # --- 关键逻辑：计算当前图包含哪几列 ---
       if (i < num_plots) {
+        # 如果不是最后一张图，按顺序取3个 (1-2-3, 4-5-6...)
         current_dims <- c((i - 1) * 3 + 1, (i - 1) * 3 + 2, (i - 1) * 3 + 3)
       } else {
+        # *** 如果是最后一张图 ***
+        # 强制取“最后3个”主成分。
+        # 例如总共7个: 这里的逻辑是取 5, 6, 7 (而不是 7, 0, 0)
+        # 例如总共6个: 这里的逻辑是取 4, 5, 6 (刚好吻合)
         current_dims <- c(n_pcs - 2, n_pcs - 1, n_pcs)
       }
+      
       # 选取颜色 (循环使用)
       color_idx <- (i - 1) %% length(color_palettes) + 1
       current_colors <- color_palettes[[color_idx]]
       
       dims_label <- paste(current_dims, collapse = "-")
+      cat(sprintf("  -> 处理图表 %d: PCs [%s] (配色方案 %d)...\n", i, dims_label, color_idx))
+      
       # 调用绘图核心
-      p <- plot_pca_3d_core(pca_res, var_pct, dims = current_dims, colors = current_colors)
-      print(p)
+      p <- plot_pca_3d_core(pca_res, var_pct, dims = current_dims)
       # 保存文件
       file_name <- file.path(PCA_dir, paste0("PCA_3D_Part", i, "_PC", dims_label, ".html"))
       saveWidget(p, file_name, selfcontained = TRUE)
       pdf_file <- file.path(PCA_dir, paste0("PCA_3D_Part", i, "_PC", dims_label, ".pdf"))
-      webshot2::webshot(
-        url = file_name, 
-        file = pdf_file, 
-        vwidth = 1200, 
-        vheight = 900, 
-        delay = 2,
-        zoom = 2
-      )
-      system2("pdfcrop", args = c(shQuote(pdf_file), shQuote(pdf_file)))
+      plotly::save_image(p, pdf_file, width = 1200, height = 1200, scale = 6)
+      #左底部右顶部
+      # pdf_file <- file.path(PCA_dir, paste0("PCA_3D_Part", 1, "_PC", "1-2-3", ".pdf"))
+      # bbox_arg <- paste0('--bbox "', 0, ' ',0, ' ',5000, ' ', 5000, '"')
+      # system2("pdfcrop", args = c(bbox_arg,shQuote(pdf_file), shQuote(pdf_file)))
       plot_list[[i]] <- p
     }
     
@@ -1553,29 +1955,29 @@ smart_pca_visualize_save <- function(pca_res, var_pct) {
     return(htmltools::tagList(plot_list))
   }
 }
+# p <- plot_pca_3d_core(pca_res, var_pct, dims = current_dims)
+# dims <- c(1,2,3)
+# pca_res <- pca_result_selected
+# var_pct <- var_percent
 
-plot_pca_3d_core <- function(pca_res, var_pct, dims, colors) {
+plot_pca_3d_core <- function(pca_res, var_pct, dims) {
   
-  point_col <- colors[1]; arrow_col <- colors[2]; ellip_col <- colors[3]
+  ellip_col <-var_colors[dims]
   
   # 根据 dims 提取特定的3列数据
   # 因为主函数逻辑保证了 dims 肯定是3个有效整数(如 5,6,7)，这里直接取即可
   scores_subset <- as.data.frame(pca_res$x[, dims])
-  rot_subset <- as.data.frame(pca_res$rotation[, dims])
+  rot_subset <- as.data.frame(pca_res$loadings[, dims])
   
   colnames(scores_subset) <- c("X", "Y", "Z")
   colnames(rot_subset) <- c("X", "Y", "Z")
   
-  # 下角标格式化
-  format_subscripts <- function(x) {
-    sapply(x, function(s) {
-      if(grepl("^[A-Z][A-Z0-9]+$", s)) {
-        paste0(substr(s, 1, 1), "<sub>", substr(s, 2, nchar(s)), "</sub>")
-      } else { s }
-    })
-  }
+
   raw_names <- rownames(rot_subset)
-  formatted_names <- format_subscripts(raw_names)
+  common_cols <- intersect(raw_names, colnames(raw_suoxie))
+  raw_names[raw_names %in% common_cols] <-
+    paste0(raw_suoxie[1,common_cols])
+  formatted_names <- raw_names
   
   # 比例缩放
   r_scores <- max(abs(scores_subset))
@@ -1588,9 +1990,10 @@ plot_pca_3d_core <- function(pca_res, var_pct, dims, colors) {
   theta <- seq(0, 2*pi, length.out=30)
   phi <- seq(0, pi, length.out=15)
   grd <- expand.grid(theta=theta, phi=phi)
-  x_ell <- 2 * sd_vec[1] * cos(grd$theta) * sin(grd$phi)
-  y_ell <- 2 * sd_vec[2] * sin(grd$theta) * sin(grd$phi)
-  z_ell <- 2 * sd_vec[3] * cos(grd$phi)
+  #椭圆 95%置信区间1D：2σ≈95.4% 2D：2σ≈86.5% 3D：2σ≈73.9%   2.795σ≈95%
+  x_ell <- 2.795 * sd_vec[1] * cos(grd$theta) * sin(grd$phi)
+  y_ell <- 2.795 * sd_vec[2] * sin(grd$theta) * sin(grd$phi)
+  z_ell <- 2.795 * sd_vec[3] * cos(grd$phi)
   
   x_mat <- matrix(x_ell, nrow=length(theta))
   y_mat <- matrix(y_ell, nrow=length(theta))
@@ -1601,61 +2004,88 @@ plot_pca_3d_core <- function(pca_res, var_pct, dims, colors) {
   
   # 绘图配置
   axis_template <- list(showgrid = TRUE, gridcolor = "#d9d9d9", backgroundcolor = "white",
-                        zerolinecolor = "#999999", titlefont = list(family = "Times New Roman", size = 14))
+                        zerolinecolor = "#999999")
+  
+  n_vars <- nrow(loadings_scaled)
+  var_colors <- colorRampPalette(var_colors)(n_vars)
   
   p <- plot_ly() %>%
+    #椭圆 95%置信区间 list(c(0, 1), c(ellip_col ,ellip_col))
     add_surface(x = x_mat, y = y_mat, z = z_mat,
-                opacity = 0.1, colorscale = list(c(0, 1), c(ellip_col, ellip_col)),
+                opacity = 0.1, colorscale = list(c(0, 1), c(ellip_col ,ellip_col)),
                 showscale = FALSE, hoverinfo = "none", name = "95% Ellipse") %>%
+    #样品点
     add_trace(data = scores_subset, x = ~X, y = ~Y, z = ~Z,
               type = 'scatter3d', mode = 'markers',
-              marker = list(size = 3, color = point_col, opacity = 0.9),
+              marker = list(size = 8, color = var_colors[1], opacity = 0.9),
               text = rownames(scores_subset), showlegend = FALSE)
   
-  # 画线
-  line_x <- c(); line_y <- c(); line_z <- c()
-  for (i in 1:nrow(loadings_scaled)) {
-    line_x <- c(line_x, 0, loadings_scaled[i, 1]*0.95, NA)
-    line_y <- c(line_y, 0, loadings_scaled[i, 2]*0.95, NA)
-    line_z <- c(line_z, 0, loadings_scaled[i, 3]*0.95, NA)
-  }
-  chang <-max(loadings_scaled[i, 1],loadings_scaled[i, 2]*0.95,loadings_scaled[i, 3]*0.95)
-  p <- add_trace(p, x = line_x, y = line_y, z = line_z, type = 'scatter3d', mode = 'lines',
-                 line = list(color = arrow_col, width = 4), showlegend = FALSE, hoverinfo = "none")
+    # 画线
+    for (i in 1:nrow(loadings_scaled)) {
+      line_x <- c(0, loadings_scaled[i, 1]*0.95)
+      line_y <- c(0, loadings_scaled[i, 2]*0.95)
+      line_z <- c(0, loadings_scaled[i, 3]*0.95)
+    
+    p <- add_trace(p, x = line_x, y = line_y, z = line_z, type = 'scatter3d', mode = 'lines',
+                   line = list(color = var_colors[i], width = 4), showlegend = FALSE, hoverinfo = "none")
+    }
+    # 画箭头头
+    chang <-max(loadings_scaled[i, 1],loadings_scaled[i, 2]*0.95,loadings_scaled[i, 3]*0.95)
+    for (i in 1:nrow(loadings_scaled)) {
+    p <- add_trace(p, x = loadings_scaled$X[i], y = loadings_scaled$Y[i], z = loadings_scaled$Z[i],
+                   u = loadings_scaled$X[i], v = loadings_scaled$Y[i], w = loadings_scaled$Z[i],
+                   type = "cone", showscale = FALSE, sizemode = "absolute", sizeref = chang*0.2, anchor = "tip",
+                   colorscale = list(c(0, 1), c(var_colors[i], var_colors[i])), name="Loadings", 
+                   hoverinfo = "text", text = raw_names)
+    }
+    # 画文字
+    p <- add_trace(p, x = loadings_scaled$X * 1.15, y = loadings_scaled$Y * 1.15, z = loadings_scaled$Z * 1.15,
+                   type = 'scatter3d', mode = 'text', text = formatted_names,
+                   textfont = list(color = var_colors, size = 34, family="Times New Roman"), 
+                   showlegend = FALSE, hoverinfo = "none")
   
-  # 画箭头头
-  p <- add_trace(p, x = loadings_scaled$X, y = loadings_scaled$Y, z = loadings_scaled$Z,
-                 u = loadings_scaled$X, v = loadings_scaled$Y, w = loadings_scaled$Z,
-                 type = "cone", showscale = FALSE, sizemode = "absolute", sizeref = chang, anchor = "tip",
-                 colorscale = list(c(0, 1), c(arrow_col, arrow_col)), name="Loadings", 
-                 hoverinfo = "text", text = raw_names)
-  
-  # 画文字
-  p <- add_trace(p, x = loadings_scaled$X * 1.15, y = loadings_scaled$Y * 1.15, z = loadings_scaled$Z * 1.15,
-                 type = 'scatter3d', mode = 'text', text = formatted_names,
-                 textfont = list(color = arrow_col, size = 13, family="Times New Roman"), 
-                 showlegend = FALSE, hoverinfo = "none")
-  
-  p <- layout(p, scene = list(
-    xaxis = c(axis_template, list(title = ax_labs[1])),
-    yaxis = c(axis_template, list(title = ax_labs[2])),
-    zaxis = c(axis_template, list(title = ax_labs[3])),
-    aspectmode = "cube", camera = list(eye = list(x=1.5, y=1.5, z=1.3))
-  ),
-  margin = list(l=0, r=0, b=0, t=0), paper_bgcolor = "white", showlegend=FALSE)
-  
-  return(p)
+    p <- layout(p, scene = list(
+      xaxis =   list(title = ax_labs[1],
+                titlefont = list(family = "Times New Roman Bold",size = 32,color="black"),
+                tickfont = list(family = "Times New Roman Bold",size = 20,color="black")),
+      yaxis =   list(title = ax_labs[2],
+                titlefont = list(family = "Times New Roman Bold",size = 32,color="black"),
+                tickfont = list(family = "Times New Roman",size = 20,color="black")),
+      zaxis =   list(title = ax_labs[3],
+                titlefont = list(family = "Times New Roman Bold",size = 32,color="black"),
+                tickfont = list(family = "Times New Roman",size = 20,color="black")),
+      aspectmode = "cube", camera = list(eye = list(x=1.2, y=1.2, z=1.4)),
+      domain = list(x = c(0, 1), y = c(0, 1))),
+      
+    margin = list(l=0, r=0, b=0, t=0, pad = 0), paper_bgcolor = "white", showlegend=FALSE,
+    annotations = list(   # 新添加的注释
+      text = formula_text,
+      x = 0.7, y = 0.9,
+      xref = "paper", yref = "paper",
+      showarrow = FALSE,
+      font = list(family = "Times New Roman",size = 30)
+    ))
+    
+    p
+    return(p)
 }
 
-plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2), colors) {
-  point_col <- colors[1]
-  arrow_col <- colors[2]
+# final_output <- smart_pca_visualize_save(pca_result_selected, var_percent)
+# p <- plot_pca_2d_core(pca_res, var_pct, dims = c(1, 2), colors = var_colors)
+# pca_res <- pca_result_selected
+# var_pct <- var_percent
+
+var_colors <- c("#E6B450", "#8B4513", "#ADD8E6","#556B2F", "#007000",
+                "#8B0000", "#9370DB", "#4B0082", "#4682B4", "#000080",  "#DD9AB5")
+
+plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2)) {
+  point_col <- var_colors[1]
   
   # 1. 准备数据
   scores <- as.data.frame(pca_res$x[, dims])
   colnames(scores) <- c("X", "Y")
   
-  loadings <- as.data.frame(pca_res$rotation[, dims])
+  loadings <- as.data.frame(pca_res$loadings[, dims])
   colnames(loadings) <- c("X", "Y")
   
   # 2. 计算缩放比例
@@ -1664,23 +2094,46 @@ plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2), colors) {
   scale_factor <- (r_scores / r_loadings) * 0.85
   loadings_scaled <- loadings * scale_factor
   
-  
-  format_subscripts <- function(x) {
-    sapply(x, function(s) {
-      if(grepl("^[A-Z][A-Z0-9]+$", s)) {
-        paste0(substr(s, 1, 1), "<sub>", substr(s, 2, nchar(s)), "</sub>")
-      } else { s }
-    })
-  }
-  formatted_names <- format_subscripts(rownames(loadings))
   ax_labs <- paste0("<b>PC", dims, " (", round(var_pct[dims], 2), "%)</b>")
   
-  # --- [核心修改] 构造箭头列表 ---
+  # 4. 绘图
+  loadings1 <- rownames(loadings)
+  valid_cols <- loadings1[loadings1 %in% colnames(raw_suoxie)]
+  loadings1[loadings1 %in% colnames(raw_suoxie)] <-paste0(raw_suoxie[,valid_cols])
+  
+  angles <- atan2(loadings_scaled$Y, loadings_scaled$X)
+  # 创建数据框方便操作
+  loadings_df <- data.frame(
+    loadings_scaled,
+    angle = angles,
+    raw_name = rownames(loadings),
+    abbrev = loadings1
+  )
+  n_vars <- nrow(loadings_df)
+  var_colors <- colorRampPalette(var_colors)(n_vars)
+  
+  # 按角度排序
+  loadings_df <- loadings_df[order(loadings_df$angle), ]
+  
+  loadings_df$color <- var_colors   # 在 order() 之前赋值
+  n <- nrow(loadings_df)
+  scale_factors <- rep(c(1.2, 1.1), length.out = n)
+  
+  text_opacity <- 1  # 调整透明度
+  
+  # 将 hex 转为 rgba 的辅助函数
+  hex_to_rgba <- function(hex, alpha) {
+    rgb_val <- col2rgb(hex)
+    sprintf("rgba(%d,%d,%d,%.2f)", rgb_val[1], rgb_val[2], rgb_val[3], alpha)
+  }
+  
+  text_colors_rgba <- sapply(loadings_df$color, hex_to_rgba, alpha = text_opacity)
+  
   arrows <- list()
-  for(i in 1:nrow(loadings_scaled)) {
+  for(i in 1:nrow(loadings_df)) {
     arrows[[i]] <- list(
-      x = loadings_scaled$X[i],      # 箭头尖端 X
-      y = loadings_scaled$Y[i],      # 箭头尖端 Y
+      x = loadings_df$X[i],          # 箭头尖端 X
+      y = loadings_df$Y[i],          # 箭头尖端 Y
       xref = "x", yref = "y",        # 尖端参考坐标系：数据轴
       ax = 0, ay = 0,                # 箭头尾部坐标：原点 (0,0)
       axref = "x", ayref = "y",      # [关键] 尾部参考坐标系：设为"x"和"y"而非默认的"pixel"
@@ -1689,36 +2142,13 @@ plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2), colors) {
       arrowhead = 2,                 # 箭头样式 (2号比较标准，3号更尖)
       arrowsize = 1,                 # 箭头大小
       arrowwidth = 2,                # 线条宽度
-      arrowcolor = arrow_col
+      arrowcolor = loadings_df$color[i]
     )
   }
-  # 4. 绘图
-  
-  angles <- atan2(loadings_scaled$Y, loadings_scaled$X)
-  
-  loadings1 <- rownames(loadings)
-  valid_cols <- loadings1[loadings1 %in% colnames(raw_suoxie)]
-  loadings1[loadings1 %in% colnames(raw_suoxie)] <-paste0(raw_suoxie[,valid_cols])
-  
-  # 创建数据框方便操作
-  loadings_df <- data.frame(
-    loadings_scaled,
-    angle = angles,
-    raw_name = rownames(loadings),
-    abbrev = loadings1,
-    formatted_name = formatted_names   # 假设您已定义 formatted_names
-  )
-  
-  # 按角度排序
-  loadings_df <- loadings_df[order(loadings_df$angle), ]
-  
-  n <- nrow(loadings_df)
-  scale_factors <- rep(c(1.2, 1.1), length.out = n)
   
   # 计算文本坐标
   text_x <- loadings_df$X * 1.2
   text_y <- loadings_df$Y * scale_factors
-  #formatted_names <- as.character(loadings_sorted$formatted_name)
   
   p <- plot_ly() %>%
     # A. 画样本点
@@ -1727,13 +2157,13 @@ plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2), colors) {
               text = rownames(scores), hoverinfo = "text",
               showlegend = FALSE) %>%
     
-    # B. 画文字标签 (向外推一点)
-    add_text(x = text_x,
-             y = text_y,
-             text = loadings_df$abbrev, 
-             textfont = list(color = arrow_col, size = 30), 
+    #B. 画文字标签 (向外推一点)
+    add_text(x = loadings_df$X * 1.2,
+             y = loadings_df$Y * scale_factors,
+             text = loadings_df$abbrev,
+             textfont = list(color = text_colors_rgba, size = 30),
              showlegend = FALSE) %>%
-    
+
     # C. 布局设置 (并将箭头列表传入)
     layout(
       xaxis = list(
@@ -1772,14 +2202,58 @@ plot_pca_2d_core <- function(pca_res, var_pct, dims=c(1,2), colors) {
       margin = list(t=30, b=50, l=50, r=30), # 稍微调整边距防止文字被切
       annotations = arrows           # 传入箭头
     )
-  
+  print(p)
   return(p)
 }
+
 pca_result_selected <- pca_result
 pca_result_selected$x <- pca_result$x[, 1:num_pc]
-pca_result_selected$rotation <- loadings
+pca_result_selected$loadings <- loadings
 pca_result_selected$sdev <- pca_result$sdev[1:num_pc]
+# pca_result_selected$x 与 df_processed[,2]  多元回归
+{y <- df_processed[, 2]
+X <- as.data.frame(pca_result_selected$x)
+model <- lm(y ~ ., data = X)
+summary(model)
+summary(model)$r.squared
 
+model_std <- lm(scale(y) ~ scale(as.matrix(X)))
+summary(model_std)
+coef_std <- coef(model_std)[-1]
+RF <- coef(model_std)[-1]^2/summary(model)$r.squared*100
+# 提取回归系数
+coefs <- coef(model)
+# 构建公式文本
+intercept <- coefs[1]
+first_coefs <- coefs[2]
+pc_coefs <- coefs[-c(1,2)]  # 去掉截距
+pc_coefs1 <- coefs[-1]
+
+first_trems<- paste0(
+  ifelse(first_coefs >= 0, "", ""),
+  round(first_coefs, 3),
+  names(first_coefs)
+)
+terms <- paste0(
+  ifelse(pc_coefs >= 0, "+", ""),
+  round(pc_coefs, 3),
+  names(pc_coefs)
+)
+beita <- paste0(
+  "β(",
+  names(pc_coefs1),
+  ") = ",
+  round(coef_std, 3)
+)
+
+if (abs(intercept) >= 0.001) {
+  intercept_term <- paste0(ifelse(intercept >= 0, " + ", " - "), round(abs(intercept), 3))
+} else intercept_term <- ""
+
+formula_text <- paste0("R² = ",round(summary(model)$r.squared, 2),"\n",
+                       "Y = ",first_trems,paste(terms, collapse = " "),intercept_term,"\n",
+                       paste(beita, collapse = "  ")
+)}
 
 final_output <- smart_pca_visualize_save(pca_result_selected, var_percent)
 }
@@ -2182,9 +2656,8 @@ print(path_rounded)
 # reg_data_renamed
 # 参考序列: y (标准化)
 # 比较序列: 所有的 X (标准化)
-if(sum(is.na(reg_data_renamed)) > 0){
-  reg_data_renamed1 <- na.omit(reg_data_renamed)
-}
+
+reg_data_renamed1 <- na.omit(reg_data_renamed)
 ref_seq <- reg_data_renamed1$y
 comp_seq <- reg_data_renamed1[, -ncol(reg_data_renamed1)] # 去掉y列
 
@@ -2914,7 +3387,7 @@ html_content <- paste0(html_content, "</tbody></table></body></html>")
 
 # 3. 导出文件
 #以此后缀 .xls 命名，Excel 会默认以兼容模式打开并渲染 HTML 标签
-out_file <- file.path(output_dir, "模型.xlsx")
+out_file <- file.path(output_dir, "拟合.xlsx")
 writeLines(html_content,out_file)
 print(out_file)
 ```
